@@ -12,6 +12,8 @@
   #include <vtkXMLImageDataWriter.h>
   #include <vtkPointData.h>
   #include <vtkSmartPointer.h>
+  #include <vtkCellArray.h>
+  #include <vtkSTLReader.h>
 #endif
 
 
@@ -47,9 +49,21 @@ int main(int argc, char* argv[]) {
   }
 
   std::string filename(argv[1]);
-  if(filename.size() < 5 || filename.substr(filename.size()-4) != std::string(".obj")) {
-    std::cerr << "Error: Expected OBJ file with filename of the form <name>.obj.\n";
-    exit(-1);
+  if(filename.size() >= 5) {
+      if(filename.substr(filename.size()-4) != std::string(".obj")) {
+#ifdef HAVE_VTK
+	  if(filename.substr(filename.size()-4) != std::string(".stl")) {
+	      std::cerr << "Error: Expected OBJ or STL file with filename of the form <name>.obj or <name>.stl. \n";
+	      exit(-1);
+	  }
+#else
+	  std::cerr << "Error: Expected OBJ file with filename of the form <name>.obj \n";
+	  exit(-1);
+#endif
+      }
+  } else {
+      std::cerr << "Error: Expected file with filename of the form <name>.obj. \n";
+      exit(-1);
   }
 
   std::stringstream arg2(argv[2]);
@@ -65,51 +79,103 @@ int main(int argc, char* argv[]) {
   Vec3f min_box(std::numeric_limits<float>::max(),std::numeric_limits<float>::max(),std::numeric_limits<float>::max()), 
     max_box(-std::numeric_limits<float>::max(),-std::numeric_limits<float>::max(),-std::numeric_limits<float>::max());
   
-  std::cout << "Reading data.\n";
-
-  std::ifstream infile(argv[1]);
-  if(!infile) {
-    std::cerr << "Failed to open. Terminating.\n";
-    exit(-1);
-  }
-
-  int ignored_lines = 0;
-  std::string line;
   std::vector<Vec3f> vertList;
   std::vector<Vec3ui> faceList;
-  while(!infile.eof()) {
-    std::getline(infile, line);
-
-    //.obj files sometimes contain vertex normals indicated by "vn"
-    if(line.substr(0,1) == std::string("v") && line.substr(0,2) != std::string("vn")){
-      std::stringstream data(line);
-      char c;
-      Vec3f point;
-      data >> c >> point[0] >> point[1] >> point[2];
-      vertList.push_back(point);
-      update_minmax(point, min_box, max_box);
-    }
-    else if(line.substr(0,1) == std::string("f")) {
-      std::stringstream data(line);
-      char c;
-      int v0,v1,v2;
-      data >> c >> v0 >> v1 >> v2;
-      faceList.push_back(Vec3ui(v0-1,v1-1,v2-1));
-    }
-    else if( line.substr(0,2) == std::string("vn") ){
-      std::cerr << "Obj-loader is not able to parse vertex normals, please strip them from the input file. \n";
-      exit(-2); 
-    }
-    else {
-      ++ignored_lines; 
-    }
-  }
-  infile.close();
   
-  if(ignored_lines > 0)
-    std::cout << "Warning: " << ignored_lines << " lines were ignored since they did not contain faces or vertices.\n";
+  if(filename.substr(filename.size()-4) != std::string(".stl")) {
+      std::cout << "Reading data.\n";
 
-  std::cout << "Read in " << vertList.size() << " vertices and " << faceList.size() << " faces." << std::endl;
+      std::ifstream infile(argv[1]);
+      if(!infile) {
+	  std::cerr << "Failed to open. Terminating.\n";
+	  exit(-1);
+      }
+
+      int ignored_lines = 0;
+      std::string line;
+      while(!infile.eof()) {
+	  std::getline(infile, line);
+
+	  //.obj files sometimes contain vertex normals indicated by "vn"
+	  if(line.substr(0,1) == std::string("v") && line.substr(0,2) != std::string("vn")){
+	      std::stringstream data(line);
+	      char c;
+	      Vec3f point;
+	      data >> c >> point[0] >> point[1] >> point[2];
+	      //    std::cout<<point[0]<<" "<<point[1]<<" "<<point[2]<<std::endl;
+
+	      vertList.push_back(point);
+	      update_minmax(point, min_box, max_box);
+	  }
+	  else if(line.substr(0,1) == std::string("f")) {
+	      std::stringstream data(line);
+	      char c;
+	      int v0,v1,v2;
+	      data >> c >> v0 >> v1 >> v2;
+	      faceList.push_back(Vec3ui(v0-1,v1-1,v2-1));
+	  }
+	  else if( line.substr(0,2) == std::string("vn") ){
+	      std::cerr << "Obj-loader is not able to parse vertex normals, please strip them from the input file. \n";
+	      exit(-2); 
+	  }
+	  else {
+	      ++ignored_lines; 
+	  }
+      }
+      infile.close();
+
+      if(ignored_lines > 0)
+	  std::cout << "Warning: " << ignored_lines << " lines were ignored since they did not contain faces or vertices.\n";
+
+      std::cout << "Read in " << vertList.size() << " vertices and " << faceList.size() << " faces." << std::endl;
+  } 
+  else 
+  {
+#ifdef HAVE_VTK
+      //parse stl file
+      vtkSmartPointer<vtkSTLReader> reader = vtkSmartPointer<vtkSTLReader>::New();
+      reader->SetFileName(filename.c_str());
+      reader->Update();
+      
+      vtkSmartPointer<vtkPolyData> mesh = reader->GetOutput();
+      //iterate through vertices
+
+      std::cout<<"Mesh has "<<mesh->GetNumberOfPoints()<<" vertices and "<<
+	  mesh->GetNumberOfPolys()<<" faces\n";
+
+      double pt[3];
+      for(int i=0; i<mesh->GetNumberOfPoints(); i++) {
+	  mesh->GetPoint(i,pt);
+	  Vec3f point(pt[0],pt[1],pt[2]);
+	  vertList.push_back(point);
+	  update_minmax(point, min_box, max_box);
+      }
+
+
+      vtkSmartPointer<vtkCellArray> triangles = mesh->GetPolys();
+      
+      triangles->Print(std::cout);
+      triangles->InitTraversal();
+
+      vtkSmartPointer<vtkIdList> pts = vtkSmartPointer<vtkIdList>::New();
+
+      while(triangles->GetNextCell(pts)) {
+	  if(pts->GetNumberOfIds() != 3 ) {
+	      //not triangle
+	      continue;
+	  }
+
+	  int v0,v1,v2;
+	  v0 = pts->GetId(0);
+	  v1 = pts->GetId(1);
+	  v2 = pts->GetId(2);
+	  faceList.push_back(Vec3ui(v0,v1,v2));
+      }
+
+      std::cout<<"Parsed "<<faceList.size()<<" number of triangles\n";
+#endif
+  }
+
 
   //Add padding around the box.
   Vec3f unit(1,1,1);
